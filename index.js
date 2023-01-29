@@ -2,8 +2,11 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const bodyParser = require("body-parser");
-const sharp = require("sharp");
 const fileUpload = require("express-fileupload");
+const { Queue } = require("bullmq");
+const { createBullBoard } = require("@bull-board/api");
+const { BullMQAdapter } = require("@bull-board/api/bullMQAdapter");
+const { ExpressAdapter } = require("@bull-board/express");
 
 const app = express();
 app.set("view engine", "ejs");
@@ -16,28 +19,40 @@ app.use(
 app.use(fileUpload());
 app.use(express.static("public"));
 
+const redisOptions = { host: "localhost", port: 6379 };
+const imageJobQueue = new Queue("imageJobQueue", {
+  connection: redisOptions,
+});
+
+const serverAdapter = new ExpressAdapter();
+const bullBoard = createBullBoard({
+  queues: [new BullMQAdapter(imageJobQueue)],
+  serverAdapter: serverAdapter,
+});
+serverAdapter.setBasePath("/admin");
+
+async function addJob(job) {
+  await imageJobQueue.add(job.type, job);
+}
+
 app.get("/", function (req, res) {
   res.render("form");
 });
+
+app.use("/admin", serverAdapter.getRouter());
 
 app.post("/upload", async function (req, res) {
   const { image } = req.files;
 
   if (!image) return res.sendStatus(400);
-  const imageName = path.parse(image.name).name;
-  const processImage = (size) =>
-    sharp(image.data)
-      .resize(size, size)
-      .webp({ lossless: true })
-      .toFile(`./public/images/${imageName}-${size}.webp`);
 
-  sizes = [90, 96, 120, 144, 160, 180, 240, 288, 360, 480, 720, 1440];
-  Promise.all(sizes.map(processImage));
-
-  let counter = 0;
-  for (let i = 0; i < 10_000_000_000; i++) {
-    counter++;
-  }
+  await addJob({
+    type: "processUploadedImages",
+    image: {
+      data: image.data.toString("base64"),
+      name: image.name,
+    },
+  });
 
   res.redirect("/result");
 });
